@@ -1,30 +1,43 @@
 # mcp-prism
 
-**Language-agnostic MCP server** for Code Prism. Reads **SoT only** — does not parse Swift/Kotlin/JS/Marlin.
+**Language-agnostic MCP** for Code Prism. Points at a **user project**, resolves SoT in the **system cache**, returns data to agents.
 
-Any `*-prism` backend writes SoT; this server exposes the same MCP tools for every language.
+Does **not** parse languages. Does **not** write into the user project.
 
-## SoT
+## Flow
 
 ```text
-<project>/.codeprism/          # preferred
-  prism-context.json
-  graph.sqlite                 # preferred for queries
-  codeprism-config.json
-
-<project>/.swiftprism/         # legacy (Swift)
+Agent  →  mcp-prism  →  ~/Library/Caches/code-prism/<lang>/<key>/
+                ↑
+         PRISM_CWD=/path/to/user/project
 ```
+
+Backends (`swift-prism`, `js-prism`, …) analyze the user project **read-only** and write cache entries. MCP only reads that cache.
+
+## Cache layout
+
+See [CACHE.md](../code-prism/CACHE.md) (local umbrella) — summary:
+
+```text
+~/Library/Caches/code-prism/
+  swift/<projectKey>/meta.json + prism-context.json + graph.sqlite
+  js/<projectKey>/…
+```
+
+`projectKey` = SHA-256(realpath(project))[:16]
 
 ## Run
 
 ```bash
-npm install
-npm run build
-# from a project that already has SoT:
-PRISM_CWD=/path/to/project node dist/server.js
+npm install && npm run build
+
+# Point at the project you want agents to inspect:
+PRISM_CWD=/path/to/user/project CODE_PRISM_LANG=swift node dist/server.js
 ```
 
-MCP config example:
+If `CODE_PRISM_LANG` is omitted, MCP picks the first language that has a cache hit.
+
+## MCP config
 
 ```json
 {
@@ -32,7 +45,10 @@ MCP config example:
     "mcp-prism": {
       "command": "node",
       "args": ["/path/to/mcp-prism/dist/server.js"],
-      "env": { "PRISM_CWD": "/path/to/your/project" }
+      "env": {
+        "PRISM_CWD": "/path/to/user/project",
+        "CODE_PRISM_LANG": "swift"
+      }
     }
   }
 }
@@ -40,15 +56,7 @@ MCP config example:
 
 ## Related
 
-Backends (local: `~/Documents/Code/code-prism/backends/`):
+Backends live under `~/Documents/Code/code-prism/backends/` (each its own git repo):  
+swift · marlin · kotlin · js · rust · go  
 
-| Repo | Role |
-|------|------|
-| [swift-prism](https://github.com/jokerphuongnam/swift-prism) | Swift → SoT |
-| [marlin-prism](https://github.com/jokerphuongnam/marlin-prism) | Marlin → SoT |
-| [kotlin-prism](https://github.com/jokerphuongnam/kotlin-prism) | Kotlin → SoT |
-| [js-prism](https://github.com/jokerphuongnam/js-prism) | JS/TS → SoT |
-| [rust-prism](https://github.com/jokerphuongnam/rust-prism) | Rust → SoT |
-| [go-prism](https://github.com/jokerphuongnam/go-prism) | Go → SoT |
-| [code-prism-app-mac](https://github.com/jokerphuongnam/code-prism-app-mac) | macOS UI |
-| [code-prism-vs-code](https://github.com/jokerphuongnam/code-prism-vs-code) | VS Code extension |
+UIs: [code-prism-app-mac](https://github.com/jokerphuongnam/code-prism-app-mac), [code-prism-vs-code](https://github.com/jokerphuongnam/code-prism-vs-code)

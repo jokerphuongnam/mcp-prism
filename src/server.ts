@@ -11,6 +11,7 @@ import {
   importGraphFromJson,
   sqlitePathBesideGraph,
 } from "./graph-db.js";
+import { resolveCacheForProject } from "./cache-resolve.js";
 
 interface GraphData {
   nodes: GraphNode[];
@@ -111,11 +112,24 @@ function tryHiddenSoT(anchor: string): ProjectPaths | null {
 }
 
 function resolveProjectPaths(): ProjectPaths | null {
-  // PRISM_CWD overrides process.cwd() for location-agnostic deployment
+  // PRISM_CWD = user project to *view* (SoT lives in ~/Library/Caches/code-prism).
   const cwd = process.env.PRISM_CWD || process.cwd();
-  const anchor = findProjectRoot(cwd);
+  const preferredLang = process.env.CODE_PRISM_LANG || process.env.PRISM_LANG;
+  const anchor = findProjectRoot(cwd) ?? cwd;
+
+  // 1) System cache (SPM-like) — preferred SoT location
+  const cacheHit = resolveCacheForProject(anchor, preferredLang);
+  if (cacheHit) {
+    return {
+      graphPath: cacheHit.graphPath,
+      contextsDir: path.join(cacheHit.cacheDir, "contexts"),
+      projectRoot: cacheHit.projectRoot,
+      sqlitePath: cacheHit.sqlitePath,
+    };
+  }
 
   if (anchor) {
+    // 2) Legacy in-project .codeprism / .swiftprism (migration only)
     const hidden = tryHiddenSoT(anchor);
     if (hidden) return hidden;
 
