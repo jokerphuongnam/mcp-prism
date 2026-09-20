@@ -57,6 +57,6 @@ If `CODE_PRISM_LANG` is omitted, MCP picks the first language that has a cache h
 ## Related
 
 Backends live under `~/Documents/Code/code-prism/backends/` (each its own git repo):  
-swift · marlin · kotlin · js · rust · go  
+swift · marlin · kotlin · js · rust · go · cpp · objective-c  
 
 UIs: [code-prism-app-mac](https://github.com/jokerphuongnam/code-prism-app-mac), [code-prism-vs-code](https://github.com/jokerphuongnam/code-prism-vs-code)

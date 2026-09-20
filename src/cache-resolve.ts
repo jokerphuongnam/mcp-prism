@@ -9,7 +9,7 @@ import * as path from "path";
 
 export const CACHE_ROOT = path.join(os.homedir(), "Library", "Caches", "code-prism");
 
-export const LANGS = ["swift", "marlin", "kotlin", "js", "rust", "go"] as const;
+export const LANGS = ["swift", "marlin", "kotlin", "js", "rust", "go", "cpp", "objc"] as const;
 export type PrismLang = (typeof LANGS)[number];
 
 export function projectKey(projectRoot: string): string {
