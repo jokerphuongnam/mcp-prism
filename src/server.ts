@@ -12,6 +12,7 @@ import {
   sqlitePathBesideGraph,
 } from "./graph-db.js";
 import { resolveAllCachesForProject, resolveCacheForProject } from "./cache-resolve.js";
+import { parseAskQuery, rankSymbols, type RankedHit } from "./symbol-resolve.js";
 
 interface GraphData {
   nodes: GraphNode[];
@@ -365,6 +366,87 @@ function findCallers(targetId: string): GraphNode[] {
   if (!_graphLoaded) loadGraphIntoMemory();
   const callerIds = _callerIndex.get(targetId) ?? [];
   return callerIds.map((id) => _nodeById.get(id)).filter(Boolean) as GraphNode[];
+}
+
+function ensureGraphLoaded(): boolean {
+  if (_graphLoaded && _graphNodes.length > 0) return true;
+  return loadGraphIntoMemory();
+}
+
+function nodePayload(node: GraphNode, full_source = false): Record<string, unknown> {
+  const result = toTokenOptimized(node, full_source) as Record<string, unknown>;
+  if (typeof result.node_context === "string" && /[cdi]\[\d+\]|imp\[\d+\]/.test(result.node_context)) {
+    result.resolved_context = resolveIndexTags(result.node_context, node);
+  }
+  return result;
+}
+
+/** Full info for one resolved id: node + callers/callees + optional neighborhood. */
+function fullInfoForId(nodeId: string, depth = 1): Record<string, unknown> | null {
+  const node = findNode(nodeId);
+  if (!node) return null;
+  const callers = findCallers(nodeId).map((c) => ({
+    id: c.id,
+    name: c.name,
+    flavor: c.flavor,
+    context: c.node_context ?? null,
+  }));
+  const callees = [...(node.calls ?? []), ...(node.inits ?? [])].map((id) => {
+    const n = findNode(id);
+    return n
+      ? { id: n.id, name: n.name, flavor: n.flavor, context: n.node_context ?? null }
+      : { id, name: id, flavor: "unknown", context: null };
+  });
+
+  // Light neighborhood (depth)
+  const neighborIds = new Set<string>();
+  const frontier = [nodeId];
+  const visited = new Set<string>();
+  for (let d = 0; d < depth; d++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const n = findNode(id);
+      if (!n) continue;
+      for (const ref of [...(n.calls ?? []), ...(n.inits ?? []), ...n.parents]) {
+        if (!visited.has(ref)) {
+          neighborIds.add(ref);
+          next.push(ref);
+        }
+      }
+      for (const c of _callerIndex.get(id) ?? []) {
+        if (!visited.has(c)) {
+          neighborIds.add(c);
+          next.push(c);
+        }
+      }
+    }
+    frontier.length = 0;
+    frontier.push(...next);
+  }
+  neighborIds.delete(nodeId);
+  const neighborhood = [...neighborIds]
+    .map((id) => findNode(id))
+    .filter(Boolean)
+    .slice(0, 40)
+    .map((n) => nodePayload(n!));
+
+  return {
+    resolved_id: node.id,
+    node: nodePayload(node),
+    callers: { count: callers.length, nodes: callers },
+    callees: { count: callees.length, nodes: callees },
+    neighborhood: { depth, count: neighborhood.length, nodes: neighborhood },
+  };
+}
+
+function resolveRelative(
+  query: string,
+  hints: { file?: string; flavor?: string; language?: string; limit?: number } = {}
+): RankedHit[] {
+  if (!ensureGraphLoaded()) return [];
+  return rankSymbols(query, _graphNodes, _callerIndex, hints);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1276,57 +1358,140 @@ server.tool(
 server.tool(
   "search_symbols",
   {
-    query: z.string().describe("Search term (e.g. 'intensity', 'BlurEffect', 'didSet')"),
+    query: z.string().describe("Relative search (e.g. 'fetch in Store', 'intensity didSet', 'BlurEffect') — no absolute id required"),
     flavor: z.string().optional().describe("Filter by flavor (class, function, variable, etc.)"),
+    file: z.string().optional().describe("Optional file/path hint (substring)"),
+    language: z.string().optional().describe("Optional language hint when multi-lang (swift, js, …)"),
     limit: z.number().default(10).describe("Max results"),
   },
-  async ({ query, flavor, limit }) => {
-    if (!_graphLoaded) loadGraphIntoMemory();
+  async ({ query, flavor, file, language, limit }) => {
+    if (!ensureGraphLoaded()) return notConfiguredResponse();
+    const results = resolveRelative(query, { flavor, file, language, limit });
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({
+          query,
+          resultCount: results.length,
+          source: "ranked",
+          _hint: "Use resolve_symbol or ask_graph to get full context for the top hit.",
+          results,
+        }, null, 2),
+      }],
+    };
+  }
+);
 
-    // Prefer indexed SQL search when SQLite SoT is open.
-    if (_graphDb) {
-      const results = _graphDb.searchSymbols(query, flavor, limit);
+// ═══════════════════════════════════════════════════════════════════════════════
+// resolve_symbol — Relative query → ranked hits + full info for best match
+// ═══════════════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "resolve_symbol",
+  {
+    query: z.string().describe("Relative name/description (e.g. 'fetch in Store', 'intensity observer')"),
+    file: z.string().optional().describe("Optional file hint"),
+    flavor: z.string().optional().describe("Optional flavor hint"),
+    language: z.string().optional().describe("Optional language hint"),
+    depth: z.number().default(1).describe("Neighborhood depth for full info"),
+    limit: z.number().default(5).describe("How many candidates to return"),
+    auto_pick: z.boolean().default(true).describe("If true, include full_info for the top-scoring hit"),
+  },
+  async ({ query, file, flavor, language, depth, limit, auto_pick }) => {
+    if (!ensureGraphLoaded()) return notConfiguredResponse();
+    const candidates = resolveRelative(query, { file, flavor, language, limit });
+    if (candidates.length === 0) {
       return {
         content: [{
           type: "text" as const,
-          text: JSON.stringify({ query, resultCount: results.length, source: "sqlite", results }, null, 2),
+          text: JSON.stringify({
+            query,
+            resolved: false,
+            message: "No symbol matched. Try another relative name or file hint.",
+            candidates: [],
+          }, null, 2),
         }],
       };
     }
 
-    const loader = getFragmentLoader();
-    const queryLower = query.toLowerCase();
-    const results: { id: string; name: string; flavor: string; context: string | null }[] = [];
+    const top = candidates[0];
+    const ambiguous =
+      candidates.length > 1 && candidates[1].score >= top.score * 0.9;
 
-    if (loader) {
-      loader.forEachFragment((nodes) => {
-        for (const n of nodes) {
-          if (results.length >= limit) return;
-          if (flavor && n.flavor !== flavor) continue;
-          const haystack = `${n.id} ${n.name}`.toLowerCase();
-          if (haystack.includes(queryLower)) {
-            results.push({ id: n.id, name: n.name, flavor: n.flavor, context: n.node_context ?? null });
-          }
-        }
-      });
-    } else {
-      const data = loadGraph();
-      if (data) {
-        for (const n of data.nodes) {
-          if (results.length >= limit) break;
-          if (flavor && n.flavor !== flavor) continue;
-          const haystack = `${n.id} ${n.name}`.toLowerCase();
-          if (haystack.includes(queryLower)) {
-            results.push({ id: n.id, name: n.name, flavor: n.flavor, context: n.node_context ?? null });
-          }
-        }
-      }
+    const payload: Record<string, unknown> = {
+      query,
+      resolved: true,
+      ambiguous,
+      top: top,
+      candidates,
+      _hint: ambiguous
+        ? "Top hits are close — pass a file/flavor hint or pick candidates[i].id"
+        : "full_info is the expanded context for the top match",
+    };
+
+    if (auto_pick) {
+      payload.full_info = fullInfoForId(top.id, depth);
     }
 
     return {
+      content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+    };
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ask_graph — Natural relative ask → resolve → full smart context
+// ═══════════════════════════════════════════════════════════════════════════════
+
+server.tool(
+  "ask_graph",
+  {
+    ask: z
+      .string()
+      .describe(
+        "Relative question/phrase, e.g. 'logic của intensity trong BlurEffect', 'ai gọi fetch', 'Store fetch function'"
+      ),
+    depth: z.number().default(1).describe("Neighbor expansion depth"),
+    limit: z.number().default(5).describe("Candidate list size"),
+  },
+  async ({ ask, depth, limit }) => {
+    if (!ensureGraphLoaded()) return notConfiguredResponse();
+    const { query, hints } = parseAskQuery(ask);
+    hints.limit = limit;
+    const candidates = resolveRelative(query, hints);
+    if (candidates.length === 0) {
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            ask,
+            parsed_query: query,
+            hints,
+            resolved: false,
+            message: "Could not resolve a symbol from that ask.",
+            candidates: [],
+          }, null, 2),
+        }],
+      };
+    }
+
+    const top = candidates[0];
+    const full = fullInfoForId(top.id, depth);
+    return {
       content: [{
         type: "text" as const,
-        text: JSON.stringify({ query, resultCount: results.length, source: "json", results }, null, 2),
+        text: JSON.stringify({
+          ask,
+          parsed_query: query,
+          hints,
+          resolved: true,
+          ambiguous: candidates.length > 1 && candidates[1].score >= top.score * 0.9,
+          top,
+          candidates,
+          full_info: full,
+          _workflow:
+            "Prefer this tool for relative questions. Use candidates[] if ambiguous. Absolute ids are optional.",
+        }, null, 2),
       }],
     };
   }

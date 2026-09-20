@@ -60,3 +60,19 @@ Backends live under `~/Documents/Code/code-prism/backends/` (each its own git re
 swift · marlin · kotlin · js · rust · go · cpp · objective-c  
 
 UIs: [code-prism-app-mac](https://github.com/jokerphuongnam/code-prism-app-mac), [code-prism-vs-code](https://github.com/jokerphuongnam/code-prism-vs-code)
+
+
+## Relative queries (no absolute ids)
+
+Prefer these tools so agents need only relative names:
+
+| Tool | Use |
+|------|-----|
+| `ask_graph` | Natural/relative phrase → resolve → **full_info** |
+| `resolve_symbol` | Relative query + optional file/flavor → candidates + full_info |
+| `search_symbols` | Ranked candidate list only |
+
+Examples:
+
+- `ask_graph({ "ask": "fetch trong Store" })`
+- `resolve_symbol({ "query": "intensity didSet", "file": "BlurEffect" })`
