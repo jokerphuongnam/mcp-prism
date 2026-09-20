@@ -1,0 +1,26 @@
+{
+  "name": "mcp-prism",
+  "version": "1.0.0",
+  "description": "Language-agnostic MCP server that reads Code Prism SoT (.codeprism / .swiftprism)",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "mcp-prism": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch",
+    "watch": "tsc --watch & nodemon --watch dist --exec 'node dist/server.js'",
+    "subgraph": "node dist/subgraph-agent.js",
+    "import-db": "node dist/graph-db.js import"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "typescript": "^5.5.0"
+  }
+}
