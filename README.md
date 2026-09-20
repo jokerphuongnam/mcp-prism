@@ -40,11 +40,15 @@ MCP config example:
 
 ## Related
 
+Backends (local: `~/Documents/Code/code-prism/backends/`):
+
 | Repo | Role |
 |------|------|
-| [swift-prism](https://github.com/jokerphuongnam/swift-prism) | Swift backend → SoT |
-| [marlin-prism](https://github.com/jokerphuongnam/marlin-prism) | Marlin backend → SoT |
-| [kotlin-prism](https://github.com/jokerphuongnam/kotlin-prism) | Kotlin backend → SoT |
-| [js-prism](https://github.com/jokerphuongnam/js-prism) | JS/TS backend → SoT |
+| [swift-prism](https://github.com/jokerphuongnam/swift-prism) | Swift → SoT |
+| [marlin-prism](https://github.com/jokerphuongnam/marlin-prism) | Marlin → SoT |
+| [kotlin-prism](https://github.com/jokerphuongnam/kotlin-prism) | Kotlin → SoT |
+| [js-prism](https://github.com/jokerphuongnam/js-prism) | JS/TS → SoT |
+| [rust-prism](https://github.com/jokerphuongnam/rust-prism) | Rust → SoT |
+| [go-prism](https://github.com/jokerphuongnam/go-prism) | Go → SoT |
 | [code-prism-app-mac](https://github.com/jokerphuongnam/code-prism-app-mac) | macOS UI |
 | [code-prism-vs-code](https://github.com/jokerphuongnam/code-prism-vs-code) | VS Code extension |
