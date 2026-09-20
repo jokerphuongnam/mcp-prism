@@ -114,16 +114,19 @@ function tryHiddenSoT(anchor: string): ProjectPaths | null {
 
 function resolveProjectPaths(): ProjectPaths | null {
   // PRISM_CWD = user project to *view* (SoT lives in ~/Library/Caches/code-prism).
+  // Prefer the exact cwd first so subdirectory projects (e.g. mcp-prism/src) keep
+  // their own cache instead of walking up to a parent package.json root.
   const cwd = process.env.PRISM_CWD || process.cwd();
   const preferredLang = process.env.CODE_PRISM_LANG || process.env.PRISM_LANG;
-  const anchor = findProjectRoot(cwd) ?? cwd;
+  const walked = findProjectRoot(cwd);
+  const anchors = [cwd];
+  if (walked && path.resolve(walked) !== path.resolve(cwd)) anchors.push(walked);
 
-  // 1) System cache (SPM-like) — preferred SoT location (multi-lang OK)
-  const allHits = resolveAllCachesForProject(anchor);
-  if (allHits.length > 0) {
+  const trySystemCache = (anchor: string): ProjectPaths | null => {
+    const allHits = resolveAllCachesForProject(anchor);
+    if (allHits.length === 0) return null;
     const cacheHit =
       (preferredLang && allHits.find((h) => h.lang === preferredLang)) || allHits[0];
-    // Stash all graph paths for multi-lang merge in loadGraphIntoMemory
     (globalThis as any).__codePrismCacheHits = allHits;
     return {
       graphPath: cacheHit.graphPath,
@@ -131,9 +134,16 @@ function resolveProjectPaths(): ProjectPaths | null {
       projectRoot: cacheHit.projectRoot,
       sqlitePath: cacheHit.sqlitePath,
     };
+  };
+
+  // 1) System cache — exact cwd, then walked project root
+  for (const anchor of anchors) {
+    const hit = trySystemCache(anchor);
+    if (hit) return hit;
   }
   (globalThis as any).__codePrismCacheHits = [];
 
+  const anchor = walked ?? cwd;
   if (anchor) {
     // 2) Legacy in-project .codeprism / .swiftprism (migration only)
     const hidden = tryHiddenSoT(anchor);
