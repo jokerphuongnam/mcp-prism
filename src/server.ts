@@ -307,23 +307,34 @@ function loadGraphIntoMemory(): boolean {
       return true;
     }
 
-    // Prefer SQLite SoT when available (or freshly imported).
+    // Prefer SQLite when it actually has nodes; context-v2 JSON may not import cleanly yet.
     const dbPath = ensureSqliteBesideJson(paths);
     if (dbPath) {
-      _graphDb?.close();
-      _graphDb = new GraphDatabase(dbPath, true);
-      const mem = _graphDb.loadAllIntoMemory();
-      _graphNodes = mem.nodes;
-      _nodeById = mem.nodeById;
-      _callerIndex = mem.callerIndex;
-      _graphLoaded = true;
-      console.error(
-        `[mcp-prism] Graph loaded from SQLite: ${mem.nodes.length} nodes (${path.basename(dbPath)})`
-      );
-      return true;
+      try {
+        const db = new GraphDatabase(dbPath, true);
+        const mem = db.loadAllIntoMemory();
+        if (mem.nodes.length > 0) {
+          _graphDb?.close();
+          _graphDb = db;
+          _graphNodes = mem.nodes;
+          _nodeById = mem.nodeById;
+          _callerIndex = mem.callerIndex;
+          _graphLoaded = true;
+          console.error(
+            `[mcp-prism] Graph loaded from SQLite: ${mem.nodes.length} nodes (${path.basename(dbPath)})`
+          );
+          return true;
+        }
+        db.close();
+        console.error(`[mcp-prism] SQLite empty — falling back to JSON`);
+      } catch (err) {
+        console.error(`[mcp-prism] SQLite open failed — JSON fallback:`, err);
+      }
     }
 
     const nodes = loadNodesFromJsonFile(paths.graphPath, "");
+    _graphDb?.close();
+    _graphDb = null;
     _graphNodes = nodes;
     _nodeById = new Map(nodes.map((n) => [n.id, n]));
     _callerIndex = new Map();
