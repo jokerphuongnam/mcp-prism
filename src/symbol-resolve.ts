@@ -209,29 +209,38 @@ export function rankSymbols(
   return hits.slice(0, limit);
 }
 
-/** Parse a free-text ask into query + soft hints. */
+/**
+ * Parse a free-text ask into query tokens + soft hints.
+ * Language-agnostic: any natural language works — ranking matches tokens
+ * against symbol ids/names/files (no locale-specific NLP required).
+ */
 export function parseAskQuery(ask: string): { query: string; hints: ResolveHints } {
   const hints: ResolveHints = {};
   let q = ask.trim();
 
-  const fileIn = q.match(/\b(?:in|trong)\s+([A-Za-z0-9_./-]+)/i);
+  // Optional file hint: common "in/within/from/…" + Identifier (EN and a few others).
+  // If absent, file tokens are still scored via rankSymbols token overlap.
+  const fileIn = q.match(
+    /\b(?:in|within|from|inside|trong|dalam|dalam|dans|en|bei)\s+([A-Za-z0-9_./-]+)/i
+  );
   if (fileIn) {
     hints.file = fileIn[1].replace(/\.(swift|ts|tsx|js|kt|rs|go|m|mm|cpp|h)$/i, "");
     q = q.replace(fileIn[0], " ").trim();
   }
 
+  // Code-flavor words (English identifiers used in graphs everywhere).
   const flavorIn = q.match(
-    /\b(class|struct|func|function|protocol|enum|actor|variable|var|didset|willset)\b/i
+    /\b(class|struct|func|function|protocol|enum|actor|variable|var|method|didset|willset)\b/i
   );
   if (flavorIn) {
     const f = flavorIn[1].toLowerCase();
     hints.flavor =
-      f === "func" || f === "function"
+      f === "func" || f === "function" || f === "method"
         ? "function"
         : f === "var" || f === "variable"
           ? "variable"
           : f === "didset" || f === "willset"
-            ? undefined // keep in query tokens
+            ? undefined
             : f;
   }
 
@@ -243,5 +252,6 @@ export function parseAskQuery(ask: string): { query: string; hints: ResolveHints
     q = q.replace(langIn[0], " ").trim();
   }
 
+  // Keep remaining text as-is (any script/language) — tokenized for ranking.
   return { query: q.replace(/\s+/g, " ").trim() || ask.trim(), hints };
 }

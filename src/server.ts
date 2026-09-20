@@ -1358,7 +1358,7 @@ server.tool(
 server.tool(
   "search_symbols",
   {
-    query: z.string().describe("Relative search (e.g. 'fetch in Store', 'intensity didSet', 'BlurEffect') — no absolute id required"),
+    query: z.string().describe("Relative search in any language (e.g. 'fetch in Store', 'intensity didSet') — no absolute id required"),
     flavor: z.string().optional().describe("Filter by flavor (class, function, variable, etc.)"),
     file: z.string().optional().describe("Optional file/path hint (substring)"),
     language: z.string().optional().describe("Optional language hint when multi-lang (swift, js, …)"),
@@ -1449,7 +1449,7 @@ server.tool(
     ask: z
       .string()
       .describe(
-        "Relative question/phrase, e.g. 'logic của intensity trong BlurEffect', 'ai gọi fetch', 'Store fetch function'"
+        "Relative question/phrase in any natural language, e.g. 'fetch in Store', 'intensity logic in BlurEffect', 'who calls fetch'"
       ),
     depth: z.number().default(1).describe("Neighbor expansion depth"),
     limit: z.number().default(5).describe("Candidate list size"),

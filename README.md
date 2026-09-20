@@ -64,7 +64,8 @@ UIs: [code-prism-app-mac](https://github.com/jokerphuongnam/code-prism-app-mac),
 
 ## Relative queries (no absolute ids)
 
-Prefer these tools so agents need only relative names:
+Prefer these tools so agents need only relative names. **Any natural language is fine**
+(EN/VI/…): ranking matches query tokens against symbol ids, names, and file paths — no locale-specific NLP.
 
 | Tool | Use |
 |------|-----|
@@ -74,5 +75,6 @@ Prefer these tools so agents need only relative names:
 
 Examples:
 
-- `ask_graph({ "ask": "fetch trong Store" })`
+- `ask_graph({ "ask": "fetch in Store" })`
+- `ask_graph({ "ask": "intensity logic BlurEffect" })`
 - `resolve_symbol({ "query": "intensity didSet", "file": "BlurEffect" })`
