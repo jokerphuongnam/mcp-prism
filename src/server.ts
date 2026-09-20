@@ -11,7 +11,7 @@ import {
   importGraphFromJson,
   sqlitePathBesideGraph,
 } from "./graph-db.js";
-import { resolveCacheForProject } from "./cache-resolve.js";
+import { resolveAllCachesForProject, resolveCacheForProject } from "./cache-resolve.js";
 
 interface GraphData {
   nodes: GraphNode[];
@@ -117,9 +117,13 @@ function resolveProjectPaths(): ProjectPaths | null {
   const preferredLang = process.env.CODE_PRISM_LANG || process.env.PRISM_LANG;
   const anchor = findProjectRoot(cwd) ?? cwd;
 
-  // 1) System cache (SPM-like) — preferred SoT location
-  const cacheHit = resolveCacheForProject(anchor, preferredLang);
-  if (cacheHit) {
+  // 1) System cache (SPM-like) — preferred SoT location (multi-lang OK)
+  const allHits = resolveAllCachesForProject(anchor);
+  if (allHits.length > 0) {
+    const cacheHit =
+      (preferredLang && allHits.find((h) => h.lang === preferredLang)) || allHits[0];
+    // Stash all graph paths for multi-lang merge in loadGraphIntoMemory
+    (globalThis as any).__codePrismCacheHits = allHits;
     return {
       graphPath: cacheHit.graphPath,
       contextsDir: path.join(cacheHit.cacheDir, "contexts"),
@@ -127,6 +131,7 @@ function resolveProjectPaths(): ProjectPaths | null {
       sqlitePath: cacheHit.sqlitePath,
     };
   }
+  (globalThis as any).__codePrismCacheHits = [];
 
   if (anchor) {
     // 2) Legacy in-project .codeprism / .swiftprism (migration only)
@@ -206,10 +211,101 @@ function ensureSqliteBesideJson(paths: ProjectPaths): string | undefined {
   }
 }
 
+function loadNodesFromJsonFile(graphPath: string, langPrefix: string): GraphNode[] {
+  const raw = fs.readFileSync(graphPath, "utf-8");
+  const parsed = JSON.parse(raw);
+  let nodes: GraphNode[] = Array.isArray(parsed)
+    ? parsed
+    : parsed.nodes ?? [];
+  // Context v2 → synthesize minimal nodes from signatures
+  if (nodes.length === 0 && Array.isArray(parsed.files)) {
+    nodes = [];
+    for (const file of parsed.files) {
+      for (const sig of file.signatures ?? []) {
+        if (!sig?.id) continue;
+        nodes.push({
+          id: sig.id,
+          name: String(sig.id).split(".").pop() ?? sig.id,
+          flavor: "type",
+          location: { absPath: file.path ?? "", line: sig.line ?? 0, col: 0 },
+          parents: [],
+          calls: Array.isArray(sig.dependencies) ? sig.dependencies : [],
+        });
+      }
+    }
+  }
+  if (!langPrefix) return nodes;
+  return nodes.map((n) => ({
+    ...n,
+    id: `${langPrefix}${n.id}`,
+    parents: (n.parents ?? []).map((p) => `${langPrefix}${p}`),
+    calls: (n.calls ?? []).map((c) => `${langPrefix}${c}`),
+    inits: n.inits?.map((c) => `${langPrefix}${c}`),
+    deinits: n.deinits?.map((c) => `${langPrefix}${c}`),
+    name: n.name,
+  }));
+}
+
 function loadGraphIntoMemory(): boolean {
   const paths = resolveProjectPaths();
   if (!paths) return false;
   try {
+    const hits =
+      ((globalThis as any).__codePrismCacheHits as ReturnType<typeof resolveAllCachesForProject>) ||
+      resolveAllCachesForProject(paths.projectRoot);
+
+    if (hits.length > 1) {
+      const multiPrefix = true;
+      let nodes: GraphNode[] = [];
+      for (const hit of hits) {
+        const prefix = multiPrefix ? `${hit.lang}::` : "";
+        try {
+          if (hit.sqlitePath && fs.existsSync(hit.sqlitePath)) {
+            const db = new GraphDatabase(hit.sqlitePath, true);
+            const mem = db.loadAllIntoMemory();
+            db.close();
+            nodes.push(
+              ...mem.nodes.map((n) => ({
+                ...n,
+                id: `${prefix}${n.id}`,
+                parents: (n.parents ?? []).map((p) => `${prefix}${p}`),
+                calls: (n.calls ?? []).map((c) => `${prefix}${c}`),
+                inits: n.inits?.map((c) => `${prefix}${c}`),
+                deinits: n.deinits?.map((c) => `${prefix}${c}`),
+                name: `[${hit.lang}] ${n.name}`,
+              }))
+            );
+          } else {
+            nodes.push(
+              ...loadNodesFromJsonFile(hit.graphPath, prefix).map((n) => ({
+                ...n,
+                name: n.name.startsWith("[") ? n.name : `[${hit.lang}] ${n.name}`,
+              }))
+            );
+          }
+        } catch (err) {
+          console.error(`[mcp-prism] skip ${hit.lang}:`, err);
+        }
+      }
+      _graphDb?.close();
+      _graphDb = null;
+      _graphNodes = nodes;
+      _nodeById = new Map(nodes.map((n) => [n.id, n]));
+      _callerIndex = new Map();
+      for (const n of nodes) {
+        for (const callId of [...(n.calls ?? []), ...(n.inits ?? []), ...(n.deinits ?? [])]) {
+          const arr = _callerIndex.get(callId) ?? [];
+          arr.push(n.id);
+          _callerIndex.set(callId, arr);
+        }
+      }
+      _graphLoaded = true;
+      console.error(
+        `[mcp-prism] Multi-lang graph: ${nodes.length} nodes from [${hits.map((h) => h.lang).join(", ")}]`
+      );
+      return true;
+    }
+
     // Prefer SQLite SoT when available (or freshly imported).
     const dbPath = ensureSqliteBesideJson(paths);
     if (dbPath) {
@@ -221,18 +317,14 @@ function loadGraphIntoMemory(): boolean {
       _callerIndex = mem.callerIndex;
       _graphLoaded = true;
       console.error(
-        `[SwiftPrism MCP] Graph loaded from SQLite: ${mem.nodes.length} nodes, ${mem.callerIndex.size} reverse links (${path.basename(dbPath)})`
+        `[mcp-prism] Graph loaded from SQLite: ${mem.nodes.length} nodes (${path.basename(dbPath)})`
       );
       return true;
     }
 
-    const raw = fs.readFileSync(paths.graphPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    const nodes: GraphNode[] = Array.isArray(parsed) ? parsed : parsed.nodes ?? [];
-
+    const nodes = loadNodesFromJsonFile(paths.graphPath, "");
     _graphNodes = nodes;
     _nodeById = new Map(nodes.map((n) => [n.id, n]));
-
     _callerIndex = new Map();
     for (const n of nodes) {
       for (const callId of [...(n.calls ?? []), ...(n.inits ?? []), ...(n.deinits ?? [])]) {
@@ -241,12 +333,11 @@ function loadGraphIntoMemory(): boolean {
         _callerIndex.set(callId, arr);
       }
     }
-
     _graphLoaded = true;
-    console.error(`[SwiftPrism MCP] Graph loaded from JSON: ${nodes.length} nodes, ${_callerIndex.size} reverse links`);
+    console.error(`[mcp-prism] Graph loaded from JSON: ${nodes.length} nodes`);
     return true;
   } catch (err) {
-    console.error("[SwiftPrism MCP] Failed to load graph:", err);
+    console.error("[mcp-prism] Failed to load graph:", err);
     return false;
   }
 }
