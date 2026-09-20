@@ -9,15 +9,41 @@ import * as path from "path";
 
 export const CACHE_ROOT = path.join(os.homedir(), "Library", "Caches", "code-prism");
 
-/** Logical language ids used by detectors / env. */
+/** @deprecated Prefer discovering `*-prism` folders; kept for legacy layout scans. */
 export const LANGS = ["swift", "marlin", "kotlin", "js", "rust", "go", "cpp", "objc"] as const;
-export type PrismLang = (typeof LANGS)[number];
+export type PrismLang = string;
 
 /** Folder name under the project cache: swift-prism, objective-c-prism, … */
 export function langPrismFolder(lang: string): string {
   if (lang === "objc") return "objective-c-prism";
   if (lang.endsWith("-prism")) return lang;
   return `${lang}-prism`;
+}
+
+/** Discover plugin ids from backends checkout + Application Support (optional). */
+export function discoverPluginLangIds(): string[] {
+  const ids = new Set<string>();
+  const roots = [
+    path.join(os.homedir(), "Documents", "Code", "code-prism", "backends"),
+    path.join(os.homedir(), "Library", "Application Support", "CodePrism", "backends"),
+  ];
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    for (const name of fs.readdirSync(root)) {
+      const manifest = path.join(root, name, "code-prism-plugin.json");
+      if (fs.existsSync(manifest)) {
+        try {
+          const j = JSON.parse(fs.readFileSync(manifest, "utf-8"));
+          if (j.id) ids.add(String(j.id));
+        } catch {
+          /* ignore */
+        }
+      } else if (name.endsWith("-prism")) {
+        ids.add(langIdFromFolder(name));
+      }
+    }
+  }
+  return [...ids];
 }
 
 export function langIdFromFolder(folder: string): string {
