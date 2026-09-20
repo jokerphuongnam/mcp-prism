@@ -9,6 +9,7 @@ import { applyStealthCompression } from "./node-context-generator.js";
 import {
   GraphDatabase,
   importGraphFromJson,
+  loadNodesFromGraphFile,
   sqlitePathBesideGraph,
 } from "./graph-db.js";
 import { resolveAllCachesForProject, resolveCacheForProject } from "./cache-resolve.js";
@@ -186,8 +187,7 @@ function resolveProjectPaths(): ProjectPaths | null {
 }
 
 const NOT_CONFIGURED_MSG =
-  "Graph data not found. Please run ./run.sh in your project root to initialize the " +
-  (STEALTH_MODE ? "stealth context." : "graph data.");
+  "Graph data not found. Run: prism analyze --root <project>  (then retry with prism-mcp).";
 
 function notConfiguredResponse() {
   return { content: [{ type: "text" as const, text: NOT_CONFIGURED_MSG }] };
@@ -208,43 +208,32 @@ let _graphDb: GraphDatabase | null = null;
 
 function ensureSqliteBesideJson(paths: ProjectPaths): string | undefined {
   const dbPath = paths.sqlitePath ?? sqlitePathBesideGraph(paths.graphPath);
-  if (fs.existsSync(dbPath)) return dbPath;
-  // Auto-import once so MCP works after older ./run.sh that only wrote JSON.
+  // Re-import when missing OR empty (old imports ignored context-v2 signatures).
+  if (fs.existsSync(dbPath)) {
+    try {
+      const existing = new GraphDatabase(dbPath, true);
+      const count = existing.nodeCount();
+      existing.close();
+      if (count > 0) return dbPath;
+      console.error(`[mcp-prism] SQLite empty (${path.basename(dbPath)}) — re-importing from JSON`);
+    } catch {
+      /* fall through to import */
+    }
+  }
   try {
     const result = importGraphFromJson(paths.graphPath, dbPath);
     console.error(
-      `[SwiftPrism MCP] Imported JSON → SQLite: ${result.nodeCount} nodes, ${result.edgeCount} edges → ${result.dbPath}`
+      `[mcp-prism] Imported JSON → SQLite: ${result.nodeCount} nodes, ${result.edgeCount} edges → ${result.dbPath}`
     );
-    return result.dbPath;
+    return result.nodeCount > 0 ? result.dbPath : undefined;
   } catch (err) {
-    console.error("[SwiftPrism MCP] SQLite import skipped:", err);
+    console.error("[mcp-prism] SQLite import skipped:", err);
     return undefined;
   }
 }
 
 function loadNodesFromJsonFile(graphPath: string, langPrefix: string): GraphNode[] {
-  const raw = fs.readFileSync(graphPath, "utf-8");
-  const parsed = JSON.parse(raw);
-  let nodes: GraphNode[] = Array.isArray(parsed)
-    ? parsed
-    : parsed.nodes ?? [];
-  // Context v2 → synthesize minimal nodes from signatures
-  if (nodes.length === 0 && Array.isArray(parsed.files)) {
-    nodes = [];
-    for (const file of parsed.files) {
-      for (const sig of file.signatures ?? []) {
-        if (!sig?.id) continue;
-        nodes.push({
-          id: sig.id,
-          name: String(sig.id).split(".").pop() ?? sig.id,
-          flavor: "type",
-          location: { absPath: file.path ?? "", line: sig.line ?? 0, col: 0 },
-          parents: [],
-          calls: Array.isArray(sig.dependencies) ? sig.dependencies : [],
-        });
-      }
-    }
-  }
+  const nodes = loadNodesFromGraphFile(graphPath);
   if (!langPrefix) return nodes;
   return nodes.map((n) => ({
     ...n,
@@ -271,29 +260,28 @@ function loadGraphIntoMemory(): boolean {
       for (const hit of hits) {
         const prefix = multiPrefix ? `${hit.lang}::` : "";
         try {
+          let langNodes: GraphNode[] = [];
           if (hit.sqlitePath && fs.existsSync(hit.sqlitePath)) {
             const db = new GraphDatabase(hit.sqlitePath, true);
             const mem = db.loadAllIntoMemory();
             db.close();
-            nodes.push(
-              ...mem.nodes.map((n) => ({
-                ...n,
-                id: `${prefix}${n.id}`,
-                parents: (n.parents ?? []).map((p) => `${prefix}${p}`),
-                calls: (n.calls ?? []).map((c) => `${prefix}${c}`),
-                inits: n.inits?.map((c) => `${prefix}${c}`),
-                deinits: n.deinits?.map((c) => `${prefix}${c}`),
-                name: `[${hit.lang}] ${n.name}`,
-              }))
-            );
-          } else {
-            nodes.push(
-              ...loadNodesFromJsonFile(hit.graphPath, prefix).map((n) => ({
-                ...n,
-                name: n.name.startsWith("[") ? n.name : `[${hit.lang}] ${n.name}`,
-              }))
-            );
+            langNodes = mem.nodes;
           }
+          // Empty sqlite (pre-synthesis import) → JSON / context-v2 signatures
+          if (langNodes.length === 0) {
+            langNodes = loadNodesFromJsonFile(hit.graphPath, "");
+          }
+          nodes.push(
+            ...langNodes.map((n) => ({
+              ...n,
+              id: `${prefix}${n.id}`,
+              parents: (n.parents ?? []).map((p) => `${prefix}${p}`),
+              calls: (n.calls ?? []).map((c) => `${prefix}${c}`),
+              inits: n.inits?.map((c) => `${prefix}${c}`),
+              deinits: n.deinits?.map((c) => `${prefix}${c}`),
+              name: n.name.startsWith("[") ? n.name : `[${hit.lang}] ${n.name}`,
+            }))
+          );
         } catch (err) {
           console.error(`[mcp-prism] skip ${hit.lang}:`, err);
         }
@@ -1308,7 +1296,7 @@ server.tool(
       return {
         content: [{
           type: "text" as const,
-          text: "No context fragments found. Run generate_subgraph_files first, or run ./run.sh.",
+          text: "No context fragments found. Run generate_subgraph_files first, or: prism analyze --root <project>.",
         }],
       };
     }
@@ -1754,7 +1742,7 @@ async function main() {
     await server.connect(transport);
 
     const mode = STEALTH_MODE ? "stealth" : "standard";
-    console.error(`[SwiftPrism MCP] Connected (mode: ${mode})`);
+    console.error(`[mcp-prism] Connected (mode: ${mode})`);
 
     const paths = resolveProjectPaths();
     if (paths) {
@@ -1765,25 +1753,25 @@ async function main() {
       try {
         fs.watch(path.dirname(paths.graphPath), (_event: string, filename: string | null) => {
           if (filename === path.basename(paths!.graphPath)) {
-            console.error("[SwiftPrism MCP] Graph file changed — reloading into memory...");
+            console.error("[mcp-prism] Graph file changed — reloading into memory...");
             loadGraphIntoMemory();
           }
         });
-        console.error(`[SwiftPrism MCP] Watching: ${paths.graphPath}`);
+        console.error(`[mcp-prism] Watching: ${paths.graphPath}`);
       } catch {
-        console.error("[SwiftPrism MCP] Could not watch graph file (non-fatal).");
+        console.error("[mcp-prism] Could not watch graph file (non-fatal).");
       }
     } else {
-      console.error("[SwiftPrism MCP] No graph data found. Tools will return guidance when called.");
-      console.error("[SwiftPrism MCP] Run ./run.sh in the project root to generate data.");
+      console.error("[mcp-prism] No graph data found. Tools will return guidance when called.");
+      console.error("[mcp-prism] Run: prism analyze --root <project>");
     }
   } catch (err) {
     // Log but do NOT exit — keep the process alive for reconnection attempts
-    console.error("[SwiftPrism MCP] Initialization error (non-fatal):", err);
+    console.error("[mcp-prism] Initialization error (non-fatal):", err);
   }
 }
 
 main().catch((err) => {
   // Last resort — log but never exit
-  console.error("[SwiftPrism MCP] Fatal startup error:", err);
+  console.error("[mcp-prism] Fatal startup error:", err);
 });

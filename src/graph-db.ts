@@ -74,9 +74,40 @@ function edgeRows(node: GraphNode): { src: string; dst: string; kind: string }[]
   return rows;
 }
 
+/**
+ * Load graph nodes from prism-context JSON.
+ * Context v2 often has `files[].signatures` and no top-level `nodes` —
+ * synthesize minimal nodes so SQLite/MCP stay usable.
+ */
 export function parseGraphJson(raw: string): GraphNode[] {
   const parsed = JSON.parse(raw);
-  return Array.isArray(parsed) ? parsed : parsed.nodes ?? [];
+  let nodes: GraphNode[] = Array.isArray(parsed) ? parsed : parsed.nodes ?? [];
+  if (nodes.length === 0 && Array.isArray(parsed?.files)) {
+    nodes = [];
+    const seen = new Set<string>();
+    for (const file of parsed.files) {
+      for (const sig of file.signatures ?? []) {
+        if (!sig?.id) continue;
+        const id = String(sig.id);
+        if (seen.has(id)) continue; // analyzers may emit duplicate signature ids
+        seen.add(id);
+        nodes.push({
+          id,
+          name: id.split(".").pop() ?? id,
+          flavor: "type",
+          location: { absPath: file.path ?? "", line: sig.line ?? 0, col: 0 },
+          parents: [],
+          calls: Array.isArray(sig.dependencies) ? sig.dependencies : [],
+        });
+      }
+    }
+  }
+  return nodes;
+}
+
+/** Convenience: read a graph JSON file (with context-v2 synthesis). */
+export function loadNodesFromGraphFile(graphPath: string): GraphNode[] {
+  return parseGraphJson(fs.readFileSync(graphPath, "utf-8"));
 }
 
 /** Rebuild SQLite from a prism-context / graph JSON file. */
@@ -95,7 +126,7 @@ export function importGraphFromJson(
 
   const insertMeta = db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)");
   const insertNode = db.prepare(
-    `INSERT INTO nodes(id, name, flavor, abs_path, line, col, extends, origin, node_context, json)
+    `INSERT OR REPLACE INTO nodes(id, name, flavor, abs_path, line, col, extends, origin, node_context, json)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const insertEdge = db.prepare(
