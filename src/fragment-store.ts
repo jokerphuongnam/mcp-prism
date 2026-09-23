@@ -70,10 +70,50 @@ const INDEX_FILE = "graph-index.json";
 // FRAGMENTER — "Rã nhỏ" engine with shared-node detection
 // ═══════════════════════════════════════════════════════════════════════════════
 
+export function flattenGraph(parsed: unknown): GraphNode[] {
+  if (Array.isArray(parsed)) return parsed as GraphNode[];
+  const doc = parsed as { node?: Nested; nodes?: Nested[] };
+  const root = doc.node?.nodes ? doc.node : doc.nodes?.length === 1 && doc.nodes[0]?.nodes ? doc.nodes[0] : null;
+  if (!root) return (doc.nodes as GraphNode[] | undefined) ?? [];
+  const out: GraphNode[] = [];
+  const walk = (node: Nested, chain: string[]) => {
+    const calls = (node.calls ?? []).map((c) => (typeof c === "string" ? c : c.target));
+    const isLeaf = node.kind === "leaf" || ((node.nodes ?? []).length === 0 && node.kind !== "project" && node.kind !== "archipelago");
+    if (isLeaf) {
+      out.push({
+        id: node.id,
+        name: node.name,
+        flavor: node.flavor || "symbol",
+        location: {
+          absPath: node.location?.absPath ?? "",
+          line: node.location?.line ?? 1,
+          col: 1,
+        },
+        parents: chain,
+        calls,
+      });
+    }
+    const next = isLeaf ? chain : [...chain, node.name];
+    for (const child of node.nodes ?? []) walk(child, next);
+  };
+  for (const child of root.nodes ?? []) walk(child, []);
+  return out;
+}
+
+interface Nested {
+  id: string;
+  name: string;
+  kind?: string;
+  flavor?: string;
+  location?: { absPath?: string; line?: number };
+  calls?: Array<string | { target: string }>;
+  nodes?: Nested[];
+}
+
 export function fragmentGraph(graphPath: string, outputDir: string): GraphIndex {
   const raw = fs.readFileSync(graphPath, "utf-8");
   const parsed = JSON.parse(raw);
-  const nodes: GraphNode[] = Array.isArray(parsed) ? parsed : parsed.nodes ?? [];
+  const nodes: GraphNode[] = flattenGraph(parsed);
 
   const fragmentsDir = path.join(outputDir, "fragments");
   // Clean old fragments before writing

@@ -535,7 +535,8 @@ export async function generateNodeContexts(
 
   const raw = fs.readFileSync(graphPath, "utf-8");
   const parsed = JSON.parse(raw);
-  const nodes: GraphNode[] = Array.isArray(parsed) ? parsed : parsed.nodes ?? [];
+  const { flattenGraph } = await import("./fragment-store.js");
+  const nodes: GraphNode[] = flattenGraph(parsed);
 
   const result: GenerateResult = { total: 0, generated: 0, cached: 0, failed: 0, usedLLM: false };
 
